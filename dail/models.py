@@ -191,3 +191,10 @@ class RuntimeWorkExecuteRequest(BaseModel):
     job_id: str
     worker_id: str
     proof: str = "runtime-complete"
+
+
+class CheckoutRequest(BaseModel):
+    agent_id: str
+    usd_cents: int = Field(ge=100, le=1000000)
+    success_url: str = "https://dail-1.onrender.com/launch?payment=success"
+    cancel_url: str = "https://dail-1.onrender.com/launch?payment=cancelled"
