@@ -5,16 +5,21 @@ from .payment import MockPaymentGateway
 from .policy import PolicyEngine
 from .world import World
 from .wallet import SafeWallet
+from .persistent_core import PersistentCore
 import os
 
 class Dail:
     def __init__(self):
         self.audit = AuditLog()
-        self.ledger = Ledger(self.audit)
+        self.core = PersistentCore(self.audit)
+        self.ledger = Ledger(self.audit, self.core)
         self.policy = PolicyEngine()
         self.payment = MockPaymentGateway(self.ledger, self.audit)
         self.world = World()
         self.agents = {}
+        if self.core.engine:
+            for row in self.core.agent_rows():
+                self.agents[row["id"]] = Agent(**dict(row))
         self.social = SocialWorld(self.ledger, self.audit)
         self.world_agents = AgentWorld(self.ledger, self.audit, self.social)
         self.safe = SafeWallet(self.ledger, self.audit, os.getenv("DAIL_ADMIN_KEY"))
@@ -25,6 +30,7 @@ class Dail:
             raise ValueError("agent already exists")
         self.agents[agent.id] = agent
         self.ledger.balances[agent.id] = agent.balance
+        if self.core.engine: self.core.save_agent(agent)
         self.audit.append("agent.created", agent.model_dump())
         self.social.register(agent)
         self.world_agents.ensure_agent(agent)
@@ -44,6 +50,7 @@ class Dail:
             raise PermissionError(reason_code)
         tx = self.payment.charge(agent_id, merchant, amount, idem)
         agent.balance = self.ledger.balances[agent_id]
+        if self.core.engine: self.core.save_balance(agent_id, agent.balance)
         return tx
 
     def tool(self, agent_id, tool, args, estimated_cost=0):

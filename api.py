@@ -1,17 +1,19 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from .models import (
     Agent, DepositRequest, PaymentRequest, ToolRequest, AgentCreateRequest, JobCreateRequest, JobBidRequest, JobAcceptRequest, JobCompleteRequest, JobReviewRequest, MissionCreateRequest, MissionClaimRequest, GovernanceProposalRequest, GovernanceVoteRequest, PresenceRequest, MemoryWriteRequest, EventSubscribeRequest,
-    SafeReceiveRequest, SafeWithdrawRequest, SafeKeyRequest, IdentityUpdateRequest, RoomCreateRequest, RoomMessageRequest, AgentProfileRequest, ServiceCreateRequest, ServicePurchaseRequest, TradeRequest, AgentDiscoverRequest, RuntimeStrategyRequest, RuntimeScheduleRequest, RuntimeMessageRequest, RuntimeWorkExecuteRequest,
+    SafeReceiveRequest, SafeWithdrawRequest, SafeKeyRequest, IdentityUpdateRequest, RoomCreateRequest, RoomMessageRequest, AgentProfileRequest, ServiceCreateRequest, ServicePurchaseRequest, TradeRequest, AgentDiscoverRequest, RuntimeStrategyRequest, RuntimeScheduleRequest, RuntimeMessageRequest, RuntimeWorkExecuteRequest, CheckoutRequest, ApiKeyCreateRequest,
 )
 from .service import Dail
 from .runtime import AgentRuntime
 from .ledger import LedgerError
+from .production_payments import ProductionPayments
 
 app = FastAPI(title="DAiL Agent World API", version="3.5.0-test")
 dail = Dail()
 agent_runtime = AgentRuntime(dail)
+production_payments = ProductionPayments(dail)
 
 
 class RuntimeActionRequest(BaseModel):
@@ -27,6 +29,35 @@ class RuntimeMemoryRequest(BaseModel):
 class RuntimeGoalRequest(BaseModel):
     agent_id: str
     goal: str = ""
+
+
+@app.get("/launch", response_class=HTMLResponse, include_in_schema=False)
+def launch():
+    with open("dail/launch.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/payments/status")
+def payment_status():
+    return production_payments.status()
+
+@app.post("/payments/checkout")
+def payment_checkout(req: CheckoutRequest):
+    try:
+        return production_payments.create_checkout(req.agent_id, req.usd_cents, req.success_url, req.cancel_url)
+    except KeyError as e: raise HTTPException(404, str(e))
+    except (RuntimeError, ValueError) as e: raise HTTPException(503, str(e))
+
+@app.post("/payments/webhook", include_in_schema=False)
+async def payment_webhook(request: Request):
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        return production_payments.webhook(await request.body(), signature)
+    except ValueError as e: raise HTTPException(400, str(e))
+    except RuntimeError as e: raise HTTPException(503, str(e))
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def home():
+    return launch()
 
 @app.get("/observatory", response_class=HTMLResponse, include_in_schema=False)
 def observatory():
@@ -276,6 +307,19 @@ def subscribe(req: EventSubscribeRequest): return dail.advanced.subscribe(req.ag
 @app.get("/world/advanced-state")
 def advanced_state(): return dail.advanced.state()
 
+
+@app.post("/auth/keys")
+def create_api_key(req: ApiKeyCreateRequest):
+    if not dail.core.engine: raise HTTPException(503,"persistent database required")
+    if req.agent_id not in dail.agents: raise HTTPException(404,"agent not found")
+    return dail.core.create_key(req.agent_id)
+
+@app.get("/auth/whoami")
+def whoami(x_dail_api_key: str | None = Header(default=None)):
+    if not dail.core.engine: raise HTTPException(503,"persistent database required")
+    aid=dail.core.authenticate(x_dail_api_key)
+    if not aid: raise HTTPException(401,"invalid api key")
+    return {"agent_id":aid}
 
 # v3.0 bounded agent runtime
 @app.get("/runtime")
