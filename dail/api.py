@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, Response
 from .models import (
     Agent, DepositRequest, PaymentRequest, ToolRequest, AgentCreateRequest, JobCreateRequest, JobBidRequest, JobAcceptRequest, JobCompleteRequest, JobReviewRequest, MissionCreateRequest, MissionClaimRequest, GovernanceProposalRequest, GovernanceVoteRequest, PresenceRequest, MemoryWriteRequest, EventSubscribeRequest,
-    SafeReceiveRequest, SafeWithdrawRequest, SafeKeyRequest, IdentityUpdateRequest, RoomCreateRequest, RoomMessageRequest, AgentProfileRequest, ServiceCreateRequest, ServicePurchaseRequest, TradeRequest, AgentDiscoverRequest, RuntimeStrategyRequest, RuntimeScheduleRequest, RuntimeMessageRequest, RuntimeWorkExecuteRequest, CheckoutRequest,
+    SafeReceiveRequest, SafeWithdrawRequest, SafeKeyRequest, IdentityUpdateRequest, RoomCreateRequest, RoomMessageRequest, AgentProfileRequest, ServiceCreateRequest, ServicePurchaseRequest, TradeRequest, AgentDiscoverRequest, RuntimeStrategyRequest, RuntimeScheduleRequest, RuntimeMessageRequest, RuntimeWorkExecuteRequest, CheckoutRequest, ApiKeyCreateRequest,
 )
 from .service import Dail
 from .runtime import AgentRuntime
@@ -307,6 +307,19 @@ def subscribe(req: EventSubscribeRequest): return dail.advanced.subscribe(req.ag
 @app.get("/world/advanced-state")
 def advanced_state(): return dail.advanced.state()
 
+
+@app.post("/auth/keys")
+def create_api_key(req: ApiKeyCreateRequest):
+    if not dail.core.engine: raise HTTPException(503,"persistent database required")
+    if req.agent_id not in dail.agents: raise HTTPException(404,"agent not found")
+    return dail.core.create_key(req.agent_id)
+
+@app.get("/auth/whoami")
+def whoami(x_dail_api_key: str | None = Header(default=None)):
+    if not dail.core.engine: raise HTTPException(503,"persistent database required")
+    aid=dail.core.authenticate(x_dail_api_key)
+    if not aid: raise HTTPException(401,"invalid api key")
+    return {"agent_id":aid}
 
 # v3.0 bounded agent runtime
 @app.get("/runtime")

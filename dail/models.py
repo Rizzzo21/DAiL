@@ -198,3 +198,6 @@ class CheckoutRequest(BaseModel):
     usd_cents: int = Field(ge=100, le=1000000)
     success_url: str = "https://dail-1.onrender.com/launch?payment=success"
     cancel_url: str = "https://dail-1.onrender.com/launch?payment=cancelled"
+
+class ApiKeyCreateRequest(BaseModel):
+    agent_id: str

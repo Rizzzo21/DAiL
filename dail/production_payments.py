@@ -30,7 +30,7 @@ class ProductionPayments:
 
     @property
     def ready(self):
-        return bool(self.enabled and stripe and self.stripe_secret and self.webhook_secret and self.database_url and self.engine and self.dail_per_usd > 0)
+        return bool(self.enabled and stripe and self.stripe_secret and self.webhook_secret and self.database_url and self.engine and self.dail.core.engine and self.dail_per_usd > 0 and os.getenv('DAIL_REQUIRE_AUTH','false').lower() == 'true')
 
     def status(self):
         return {"provider":"stripe","production_enabled":self.enabled,"production_ready":self.ready,"real_money":self.ready,"persistent_database_configured":bool(self.database_url),"dail_per_usd":self.dail_per_usd}
@@ -63,8 +63,22 @@ class ProductionPayments:
         self._require_ready()
         try: event=stripe.Webhook.construct_event(payload,signature,self.webhook_secret)
         except Exception as e: raise ValueError(f"invalid webhook: {e}")
-        if event["type"] not in ("checkout.session.completed","checkout.session.async_payment_succeeded"):
+        if event["type"] not in ("checkout.session.completed","checkout.session.async_payment_succeeded","charge.refunded"):
             return {"received":True,"handled":False,"event":event["type"]}
+        if event["type"] == "charge.refunded":
+            charge=event["data"]["object"]
+            sid=(charge.get("metadata") or {}).get("checkout_session_id") or (charge.get("payment_intent") or "")
+            with self.engine.begin() as c:
+                row=c.execute(text("SELECT agent_id,status FROM dail_payments WHERE session_id=:sid"),{"sid":sid}).fetchone()
+            if not row: return {"received":True,"handled":False,"reason":"refund_without_checkout_mapping"}
+            agent_id,status=row
+            if status == "refunded": return {"received":True,"handled":True,"duplicate":True,"session_id":sid}
+            txid=(charge.get("metadata") or {}).get("dail_transaction_id")
+            if txid:
+                tx=self.dail.ledger.refund(txid)
+                with self.engine.begin() as c:c.execute(text("UPDATE dail_payments SET status='refunded' WHERE session_id=:sid"),{"sid":sid})
+                return {"received":True,"handled":True,"session_id":sid,"transaction_id":tx.id,"status":"refunded"}
+            return {"received":True,"handled":False,"reason":"missing_dail_transaction_mapping"}
         session=event["data"]["object"]; sid=session["id"]
         with self._lock, self.engine.begin() as c:
             row=c.execute(text("SELECT agent_id,dail_amount,status FROM dail_payments WHERE session_id=:sid FOR UPDATE"),{"sid":sid}).fetchone()
@@ -73,6 +87,10 @@ class ProductionPayments:
             if status=="paid": return {"received":True,"handled":True,"duplicate":True,"session_id":sid}
             c.execute(text("UPDATE dail_payments SET status='paid',paid_at=:paid WHERE session_id=:sid"),{"paid":datetime.now(timezone.utc).isoformat(),"sid":sid})
         tx=self.dail.ledger.credit(agent_id,int(dail_amount),kind="stripe_deposit",idem=f"stripe:{sid}")
+        try:
+            stripe.PaymentIntent.modify(session.get("payment_intent"), metadata={"checkout_session_id":sid,"dail_transaction_id":tx.id}) if session.get("payment_intent") else None
+        except Exception:
+            pass
         self.dail.agents[agent_id].balance=self.dail.ledger.balances[agent_id]
         self.dail.audit.append("payment.stripe_verified",{"session_id":sid,"agent_id":agent_id,"amount_dail":dail_amount,"transaction":tx.id})
         return {"received":True,"handled":True,"duplicate":False,"session_id":sid,"transaction_id":tx.id}
